@@ -158,6 +158,7 @@ class _SX127x:
         self._spi.open(spi_bus, spi_cs)
         self._spi.max_speed_hz = spi_speed
         self._spi.mode = 0b00
+        self._implicit_header = False
 
     # ---- SPI primitives --------------------------------------------------
 
@@ -262,6 +263,15 @@ class _SX127x:
         else:
             self._write(REG_MODEM_CONFIG2, mc2 & ~0x04)
 
+    def enable_implicit_header(self, enabled=True):
+        """Set implicit header mode; payload length is fixed."""
+        self._implicit_header = enabled
+        mc1 = self._read(REG_MODEM_CONFIG1)
+        if enabled:
+            self._write(REG_MODEM_CONFIG1, mc1 | 0x01)
+        else:
+            self._write(REG_MODEM_CONFIG1, mc1 & ~0x01)
+
     # ---- DIO mapping -----------------------------------------------------
 
     def set_dio0_rxdone(self):
@@ -277,6 +287,8 @@ class _SX127x:
     # ---- FIFO / packet ---------------------------------------------------
 
     def start_rx(self):
+        if self._implicit_header:
+            self._write(REG_PAYLOAD_LENGTH, MAX_LORA_PKT)
         self._write(REG_FIFO_RX_BASE_ADDR, 0x00)
         self._write(REG_FIFO_ADDR_PTR,     0x00)
         self._write(REG_IRQ_FLAGS, 0xFF)   # clear all IRQs
@@ -288,7 +300,12 @@ class _SX127x:
         # Move FIFO pointer to start of received packet
         ptr = self._read(REG_FIFO_RX_CURRENT_ADDR)
         self._write(REG_FIFO_ADDR_PTR, ptr)
-        n = self._read(REG_RX_NB_BYTES)
+
+        if self._implicit_header:
+            n = MAX_LORA_PKT
+        else:
+            n = self._read(REG_RX_NB_BYTES)
+
         data = bytes(self._read_burst(REG_FIFO, n))
         self._write(REG_IRQ_FLAGS, 0xFF)   # clear
         return data
@@ -298,8 +315,15 @@ class _SX127x:
         self.set_mode(MODE_STDBY)
         self._write(REG_FIFO_TX_BASE_ADDR, 0x00)
         self._write(REG_FIFO_ADDR_PTR,     0x00)
+
+        if self._implicit_header:
+            payload_len = MAX_LORA_PKT
+            data = data.ljust(MAX_LORA_PKT, b'\x00')
+        else:
+            payload_len = len(data)
+
         self._write_burst(REG_FIFO, data)
-        self._write(REG_PAYLOAD_LENGTH, len(data))
+        self._write(REG_PAYLOAD_LENGTH, payload_len)
         self._write(REG_IRQ_FLAGS, 0xFF)
         self.set_dio0_txdone()
         self.set_mode(MODE_TX)
@@ -353,6 +377,7 @@ class LoRaHAMInterface(Interface):
         self.tx_power         = int(configuration.get("tx_power",         17))
         self.sync_word        = int(configuration.get("sync_word",        "0x12"), 16)
         self.preamble_length  = int(configuration.get("preamble_length",  8))
+        self.implicit_header  = configuration.get("implicit_header", False)
 
         # Reticulum interface mode
         mode_str = configuration.get("mode", "full").lower().strip()
@@ -402,6 +427,7 @@ class LoRaHAMInterface(Interface):
             self._radio.set_sync_word(self.sync_word)
             self._radio.set_preamble_length(self.preamble_length)
             self._radio.enable_crc(True)
+            self._radio.enable_implicit_header(self.implicit_header)
 
             self.bitrate = self._calc_bitrate(actual_bw)
             self.HW_MTU  = RNS_MTU   # we handle fragmentation internally
@@ -487,6 +513,11 @@ class LoRaHAMInterface(Interface):
     # ------------------------------------------------------------------
 
     def _receive_raw(self, raw: bytes):
+        if self.implicit_header:
+            # Implicit mode – no fragmentation, just raw payload
+            self.process_incoming(raw)
+            return
+
         if len(raw) < 1:
             RNS.log(f"[{self}] RX empty frame, discarding", RNS.LOG_DEBUG)
             return
@@ -536,7 +567,12 @@ class LoRaHAMInterface(Interface):
 
         with self._tx_lock:
             try:
-                if pkt_len <= MAX_LORA_PKT - 1:
+                if self.implicit_header:
+                    # Implicit mode – no fragmentation, always transmit a full frame
+                    self._tx_frame(data)
+                    RNS.log(f"[{self}] TX fixed-size frame {len(data)} B", RNS.LOG_DEBUG)
+
+                elif pkt_len <= MAX_LORA_PKT - 1:
                     # Fits in one frame: [FLAG_SINGLE][payload]
                     self._tx_frame(bytes([FLAG_SINGLE]) + data)
                     RNS.log(f"[{self}] TX single frame {pkt_len} B", RNS.LOG_DEBUG)

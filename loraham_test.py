@@ -47,7 +47,7 @@ try:
         REG_DIO_MAPPING1,
         MODE_LONG_RANGE, MODE_SLEEP, MODE_STDBY, MODE_RX_CONT, MODE_TX,
         IRQ_RX_DONE, IRQ_TX_DONE, IRQ_PAYLOAD_CRC_ERR,
-        HEADER_SIZE, MAX_PAYLOAD, FXOSC, BW_MAP,
+        MAX_LORA_PKT, FXOSC, BW_MAP,
     )
 except ImportError as e:
     print(f"ERROR: Could not import LoRaHAMInterface: {e}")
@@ -360,7 +360,7 @@ def test_dio0_pin_diagnostic(radio):
     t.start()
 
     payload = b"DIO0 DIAG"
-    frame   = bytes([0, len(payload)]) + payload
+    frame   = payload
     radio.set_mode(0x01)   # STDBY
     radio._write(0x0E, 0x00)  # FIFO_TX_BASE
     radio._write(0x0D, 0x00)  # FIFO_ADDR_PTR
@@ -411,7 +411,7 @@ def test_transmit(radio, count=3):
     all_ok = True
     for i in range(count):
         payload = f"LoRaHAM test packet #{i+1} | time={time.time():.3f}".encode()
-        frame   = bytes([len(payload) >> 8, len(payload) & 0xFF]) + payload
+        frame   = payload
 
         radio.send_packet(frame)
 
@@ -466,14 +466,9 @@ def test_rx_listen(radio, timeout_s=10):
 
     if received:
         result("Packet received", True, f"{len(received)} bytes on air")
-        if len(received) >= HEADER_SIZE:
-            pkt_len = (received[0] << 8) | received[1]
-            body    = received[HEADER_SIZE : HEADER_SIZE + pkt_len]
-            try:
-                print(f"  [{INFO}] Decoded payload ({pkt_len} B): {body.decode('utf-8', errors='replace')}")
-            except Exception:
-                print(f"  [{INFO}] Raw bytes: {received.hex()}")
-        else:
+        try:
+            print(f"  [{INFO}] Decoded payload: {received.decode('utf-8', errors='replace')}")
+        except Exception:
             print(f"  [{INFO}] Raw bytes: {received.hex()}")
         return True
     else:
@@ -503,7 +498,7 @@ def test_loopback(radio, count=3, timeout_s=10):
     ok_count = 0
     for i in range(count):
         payload = f"LOOPBACK#{i}|{time.time():.4f}".encode()
-        frame   = bytes([len(payload) >> 8, len(payload) & 0xFF]) + payload
+        frame   = payload
 
         radio.send_packet(frame)
         tx_ok, tx_time = _poll_flag(IRQ_TX_DONE, 5.0)
@@ -525,7 +520,7 @@ def test_loopback(radio, count=3, timeout_s=10):
                 continue
             echo  = radio.read_packet()
             radio.start_rx()
-            match = echo == frame
+            match = echo.rstrip(b'\x00') == frame
             result(f"Loopback #{i+1} RX echo matches TX",
                    match, f"TX={len(frame)}B RX={len(echo)}B  RTT≈{(tx_time+rx_time)*1000:.0f}ms")
             if match:
@@ -553,6 +548,7 @@ def parse_args():
     p.add_argument("--loopback",  action="store_true")
     p.add_argument("--rx-only",   action="store_true")
     p.add_argument("--tx-only",   action="store_true")
+    p.add_argument("--implicit-header", action="store_true", help="Enable LoRa implicit header mode")
     return p.parse_args()
 
 
@@ -568,6 +564,8 @@ def main():
     print(f"  TX power   : {args.power} dBm")
     print(f"  DIO0 pin   : BCM {PIN_DIO0}")
     print(f"  RESET pin  : BCM {PIN_RESET}")
+    if args.implicit_header:
+        print(f"  Implicit   : Enabled")
 
     radio = None
     try:
@@ -585,6 +583,7 @@ def main():
             radio.set_bandwidth(args.bw)
             radio.set_coding_rate(args.cr)
             radio.set_spreading_factor(args.sf)
+            radio.enable_implicit_header(args.implicit_header)
             radio.set_lna_gain()
             radio.set_sync_word(0x12)
             radio.set_preamble_length(8)
@@ -596,6 +595,7 @@ def main():
             radio.set_bandwidth(args.bw)
             radio.set_coding_rate(args.cr)
             radio.set_spreading_factor(args.sf)
+            radio.enable_implicit_header(args.implicit_header)
             radio.set_lna_gain()
             radio.set_tx_power(args.power)
             radio.set_sync_word(0x12)
@@ -609,6 +609,7 @@ def main():
             radio.set_bandwidth(args.bw)
             radio.set_coding_rate(args.cr)
             radio.set_spreading_factor(args.sf)
+            radio.enable_implicit_header(args.implicit_header)
             radio.set_lna_gain()
             radio.set_tx_power(args.power)
             radio.set_sync_word(0x12)
@@ -636,6 +637,7 @@ def main():
             radio.set_bandwidth(args.bw)
             radio.set_coding_rate(args.cr)
             radio.set_spreading_factor(args.sf)
+            radio.enable_implicit_header(args.implicit_header)
             radio.set_lna_gain()
             radio.set_tx_power(args.power)
             radio.set_sync_word(0x12)
