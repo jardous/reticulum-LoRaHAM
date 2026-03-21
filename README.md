@@ -41,12 +41,14 @@ No other LoRa library is needed.
 | DIO0 | GPIO | **4** |
 | RESET | GPIO | **17** |
 
-If your HAT uses different pins for DIO0 or RESET, update these two
-constants at the top of `LoRaHAMInterface.py`:
+If your HAT uses different pins for DIO0 or RESET, you can specify them
+in your Reticulum `config` file:
 
-```python
-PIN_DIO0  = 4    # RxDone / TxDone interrupt
-PIN_RESET = 17   # Active-low hardware reset
+```ini
+[[LoRaHAM 433]]
+  # ... other options
+  pin_dio0  = 4
+  pin_reset = 17
 ```
 
 Make sure SPI is enabled on the Pi: `sudo raspi-config` → Interfaces → SPI → Enable.
@@ -94,6 +96,39 @@ Make sure SPI is enabled on the Pi: `sudo raspi-config` → Interfaces → SPI �
   # Reticulum interface mode: full / point_to_point / access_point /
   #                           roaming / boundary / gateway
   mode              = full
+
+  # To use LoRa implicit header mode (fixed-size packets), add:
+  # implicit_header = yes
+```
+
+---
+
+## Multiple Interfaces
+
+You can run multiple LoRa modules on the same Raspberry Pi, for example to
+bridge a 433 MHz and an 868 MHz network. Add a configuration block for
+each interface and specify the correct hardware pins and SPI bus:
+
+```ini
+[[LoRaHAM 433]]
+  type              = LoRaHAMInterface
+  interface_enabled = yes
+  frequency         = 433775000
+  # ... other radio params
+  pin_dio0          = 4
+  pin_reset         = 17
+  spi_bus           = 0
+  spi_cs            = 0
+
+[[LoRaHAM 868]]
+  type              = LoRaHAMInterface
+  interface_enabled = yes
+  frequency         = 868100000
+  # ... other radio params
+  pin_dio0          = 22
+  pin_reset         = 23
+  spi_bus           = 0
+  spi_cs            = 1
 ```
 
 ---

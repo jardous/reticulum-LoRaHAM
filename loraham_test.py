@@ -37,7 +37,6 @@ sys.path.insert(0, "/home/jiri/.reticulum/interfaces")
 try:
     from LoRaHAMInterface import (
         _SX127x,
-        PIN_DIO0, PIN_RESET,
         REG_OP_MODE, REG_VERSION, REG_SYNC_WORD,
         REG_MODEM_CONFIG1, REG_MODEM_CONFIG2, REG_MODEM_CONFIG3,
         REG_FR_MSB, REG_FR_MID, REG_FR_LSB,
@@ -70,7 +69,7 @@ WARN = "\033[33m WARN\033[0m"
 
 _results = []
 
-def _arm_dio0(callback):
+def _arm_dio0(callback, pin_dio0):
     """
     Safely (re)arm DIO0 edge detection with fallback to polling.
     RPi.GPIO add_event_detect can fail if:
@@ -81,25 +80,25 @@ def _arm_dio0(callback):
     """
     for attempt in range(3):
         try:
-            GPIO.remove_event_detect(PIN_DIO0)
+            GPIO.remove_event_detect(pin_dio0)
         except Exception:
             pass
-        GPIO.setup(PIN_DIO0, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+        GPIO.setup(pin_dio0, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
         time.sleep(0.1 * (attempt + 1))
         try:
-            GPIO.add_event_detect(PIN_DIO0, GPIO.RISING, callback=callback, bouncetime=10)
+            GPIO.add_event_detect(pin_dio0, GPIO.RISING, callback=callback, bouncetime=10)
             return   # success
         except RuntimeError as e:
             print(f"  [{WARN}] add_event_detect attempt {attempt+1} failed: {e}")
             # Diagnostic: check what the kernel sees for this pin
             import os
-            gpio_path = f"/sys/class/gpio/gpio{PIN_DIO0}"
+            gpio_path = f"/sys/class/gpio/gpio{pin_dio0}"
             if os.path.exists(gpio_path):
                 try:
                     direction = open(f"{gpio_path}/direction").read().strip()
                     value     = open(f"{gpio_path}/value").read().strip()
                     edge      = open(f"{gpio_path}/edge").read().strip()
-                    print(f"  [{INFO}] /sys/class/gpio/gpio{PIN_DIO0}: "
+                    print(f"  [{INFO}] /sys/class/gpio/gpio{pin_dio0}: "
                           f"direction={direction} value={value} edge={edge}")
                 except Exception as se:
                     print(f"  [{INFO}] Could not read sysfs gpio: {se}")
@@ -107,23 +106,23 @@ def _arm_dio0(callback):
                 print(f"  [{INFO}] {gpio_path} does not exist – pin not exported")
 
     # All attempts failed – fall back to polling
-    print(f"  [{WARN}] Falling back to polling on BCM {PIN_DIO0} (10 ms interval)")
-    _start_poll_thread(callback)
+    print(f"  [{WARN}] Falling back to polling on BCM {pin_dio0} (10 ms interval)")
+    _start_poll_thread(callback, pin_dio0)
 
 # Polling fallback state
 _poll_thread  = None
 _poll_stop    = threading.Event()
 
-def _start_poll_thread(callback):
+def _start_poll_thread(callback, pin_dio0):
     global _poll_thread
     _poll_stop.clear()
     def _poll():
-        last = GPIO.input(PIN_DIO0)
+        last = GPIO.input(pin_dio0)
         while not _poll_stop.is_set():
-            cur = GPIO.input(PIN_DIO0)
+            cur = GPIO.input(pin_dio0)
             if cur == GPIO.HIGH and last == GPIO.LOW:
                 try:
-                    callback(PIN_DIO0)
+                    callback(pin_dio0)
                 except Exception:
                     pass
             last = cur
@@ -131,14 +130,14 @@ def _start_poll_thread(callback):
     _poll_thread = threading.Thread(target=_poll, daemon=True)
     _poll_thread.start()
 
-def _disarm_dio0():
+def _disarm_dio0(pin_dio0):
     global _poll_thread
     _poll_stop.set()
     if _poll_thread and _poll_thread.is_alive():
         _poll_thread.join(timeout=0.5)
     _poll_thread = None
     try:
-        GPIO.remove_event_detect(PIN_DIO0)
+        GPIO.remove_event_detect(pin_dio0)
     except Exception:
         pass
 
@@ -318,17 +317,18 @@ def test_rx_mode(radio):
 
 def test_dio0_pin_diagnostic(radio):
     """
-    Check the actual electrical state of PIN_DIO0 and nearby pins.
+    Check the actual electrical state of the configured DIO0 pin and nearby pins.
     If DIO0 is wired to a different BCM pin on your HAT, this will show it:
     the correct pin will pulse HIGH briefly after a TX or when a packet arrives.
     """
-    section("11b. DIO0 pin diagnostic (check if PIN_DIO0 is correct)")
+    section("11b. DIO0 pin diagnostic (check if configured pin is correct)")
     import os
 
-    # Read current level of PIN_DIO0 and a few neighbours
-    candidates = sorted(set([PIN_DIO0, 4, 5, 6, 25, 24, 23, 22]))
+    # Read current level of the configured pin and a few neighbours
+    pin_dio0 = radio.pin_dio0
+    candidates = sorted(set([pin_dio0, 4, 5, 6, 25, 24, 23, 22]))
     print(f"  [{INFO}] Sampling BCM pins: {candidates}")
-    print(f"  [{INFO}] Configured PIN_DIO0 = BCM {PIN_DIO0}")
+    print(f"  [{INFO}] Configured PIN_DIO0 = BCM {pin_dio0}")
 
     levels = {}
     for pin in candidates:
@@ -378,13 +378,13 @@ def test_dio0_pin_diagnostic(radio):
     radio.start_rx()
 
     if fired_pins:
-        correct = PIN_DIO0 in fired_pins
-        result(f"PIN_DIO0 (BCM {PIN_DIO0}) pulsed HIGH during TX",
+        correct = pin_dio0 in fired_pins
+        result(f"Configured DIO0 (BCM {pin_dio0}) pulsed HIGH during TX",
                correct,
                f"pins that pulsed: {fired_pins}")
         if not correct:
             print(f"  [{WARN}] DIO0 appears to be on BCM {fired_pins[0]} – "
-                  f"update PIN_DIO0 in LoRaHAMInterface.py!")
+                  f"update pin_dio0 in your config!")
     else:
         result("Any pin pulsed HIGH during TX", False,
                "no pulse seen – check DIO0 wiring to SX127x")
@@ -549,6 +549,11 @@ def parse_args():
     p.add_argument("--rx-only",   action="store_true")
     p.add_argument("--tx-only",   action="store_true")
     p.add_argument("--implicit-header", action="store_true", help="Enable LoRa implicit header mode")
+    # Hardware config
+    p.add_argument("--pin-dio0",  type=int, default=4,    help="BCM pin for DIO0")
+    p.add_argument("--pin-reset", type=int, default=17,   help="BCM pin for RESET")
+    p.add_argument("--spi-bus",   type=int, default=0,    help="SPI bus number")
+    p.add_argument("--spi-cs",    type=int, default=0,    help="SPI chip select")
     return p.parse_args()
 
 
@@ -562,15 +567,21 @@ def main():
     print(f"  Bandwidth  : {args.bw/1000:.0f} kHz")
     print(f"  SF / CR    : SF{args.sf}  CR 4/{args.cr}")
     print(f"  TX power   : {args.power} dBm")
-    print(f"  DIO0 pin   : BCM {PIN_DIO0}")
-    print(f"  RESET pin  : BCM {PIN_RESET}")
+    print(f"  DIO0 pin   : BCM {args.pin_dio0}")
+    print(f"  RESET pin  : BCM {args.pin_reset}")
+    print(f"  SPI bus    : {args.spi_bus}:{args.spi_cs}")
     if args.implicit_header:
         print(f"  Implicit   : Enabled")
 
     radio = None
     try:
         print("\n  Initialising _SX127x driver…")
-        radio = _SX127x()
+        radio = _SX127x(
+            pin_dio0=args.pin_dio0,
+            pin_reset=args.pin_reset,
+            spi_bus=args.spi_bus,
+            spi_cs=args.spi_cs,
+        )
         radio.reset()
         time.sleep(0.05)
         radio.set_mode(MODE_SLEEP)
@@ -654,7 +665,7 @@ def main():
         traceback.print_exc()
     finally:
         if radio:
-            _disarm_dio0()
+            _disarm_dio0(args.pin_dio0)
             radio.close()
             print("\n  Radio closed, GPIO cleaned up.")
 

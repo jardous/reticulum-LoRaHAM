@@ -50,12 +50,6 @@ except ImportError:
 
 
 ##############################################################################
-# LoRaHAM Pi pin assignments (BCM numbering)
-##############################################################################
-PIN_DIO0  = 4    # RxDone / TxDone interrupt
-PIN_RESET = 17   # Active-low hardware reset
-
-##############################################################################
 # SX127x register map (LoRa mode)
 ##############################################################################
 REG_FIFO                = 0x00
@@ -144,15 +138,18 @@ class _SX127x:
     All register names match the Semtech SX1276 datasheet.
     """
 
-    def __init__(self, spi_bus=0, spi_cs=0, spi_speed=5_000_000):
+    def __init__(self, pin_dio0, pin_reset, spi_bus=0, spi_cs=0, spi_speed=5_000_000):
+        self.pin_dio0 = pin_dio0
+        self.pin_reset = pin_reset
+
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
         # Set RESET high (inactive) before opening SPI so the chip is not
         # held in reset while we configure the bus.
-        GPIO.setup(PIN_RESET, GPIO.OUT,  initial=GPIO.HIGH)
+        GPIO.setup(self.pin_reset, GPIO.OUT,  initial=GPIO.HIGH)
         # DIO0 is an output from the SX127x – configure as input with
         # pull-down so it reads 0 when no interrupt is pending.
-        GPIO.setup(PIN_DIO0,  GPIO.IN,  pull_up_down=GPIO.PUD_DOWN)
+        GPIO.setup(self.pin_dio0,  GPIO.IN,  pull_up_down=GPIO.PUD_DOWN)
 
         self._spi = spidev.SpiDev()
         self._spi.open(spi_bus, spi_cs)
@@ -177,9 +174,9 @@ class _SX127x:
     # ---- Hardware reset --------------------------------------------------
 
     def reset(self):
-        GPIO.output(PIN_RESET, GPIO.LOW)
+        GPIO.output(self.pin_reset, GPIO.LOW)
         time.sleep(0.01)
-        GPIO.output(PIN_RESET, GPIO.HIGH)
+        GPIO.output(self.pin_reset, GPIO.HIGH)
         time.sleep(0.01)
 
     # ---- Mode control ----------------------------------------------------
@@ -347,7 +344,7 @@ class _SX127x:
         except Exception:
             pass
         try:
-            GPIO.cleanup([PIN_DIO0, PIN_RESET])
+            GPIO.cleanup([self.pin_dio0, self.pin_reset])
         except Exception:
             pass
 
@@ -379,6 +376,12 @@ class LoRaHAMInterface(Interface):
         self.preamble_length  = int(configuration.get("preamble_length",  8))
         self.implicit_header  = configuration.get("implicit_header", False)
 
+        # Hardware pin/bus config
+        self.pin_dio0         = int(configuration.get("pin_dio0", 4))
+        self.pin_reset        = int(configuration.get("pin_reset", 17))
+        self.spi_bus          = int(configuration.get("spi_bus", 0))
+        self.spi_cs           = int(configuration.get("spi_cs", 0))
+
         # Reticulum interface mode
         mode_str = configuration.get("mode", "full").lower().strip()
         mode_map = {
@@ -404,7 +407,12 @@ class LoRaHAMInterface(Interface):
 
     def _start(self):
         try:
-            self._radio = _SX127x(spi_bus=0, spi_cs=0)
+            self._radio = _SX127x(
+                pin_dio0=self.pin_dio0,
+                pin_reset=self.pin_reset,
+                spi_bus=self.spi_bus,
+                spi_cs=self.spi_cs,
+            )
             self._radio.reset()
 
             ver = self._radio.version()
@@ -445,14 +453,20 @@ class LoRaHAMInterface(Interface):
 
             RNS.log(
                 f"[{self}] LoRaHAM interface online – "
-                f"{self.frequency/1e6:.4f} MHz  "
-                f"BW={actual_bw/1000:.0f} kHz  "
-                f"SF{self.spreading_factor}  "
-                f"CR 4/{self.coding_rate}  "
-                f"TXpwr={self.tx_power} dBm  "
-                f"Rb≈{self.bitrate} bit/s  "
-                f"chip v0x{ver:02X}",
+                f"freq={self.frequency/1e6:.3f} MHz  "
+                f"bw={actual_bw/1000:.0f}kHz  "
+                f"sf={self.spreading_factor}  "
+                f"cr=4/{self.coding_rate}  "
+                f"txp={self.tx_power}dBm",
                 RNS.LOG_NOTICE,
+            )
+            RNS.log(
+                f"[{self}] Hardware: "
+                f"dio0={self.pin_dio0}  "
+                f"reset={self.pin_reset}  "
+                f"spi={self.spi_bus}:{self.spi_cs}  "
+                f"chip v0x{ver:02X}",
+                RNS.LOG_VERBOSE,
             )
 
         except Exception:
