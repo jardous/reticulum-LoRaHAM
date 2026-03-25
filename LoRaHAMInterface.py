@@ -38,8 +38,21 @@ import threading
 import traceback
 import struct
 
-import RNS
-from RNS.Interfaces.Interface import Interface
+try:
+    import RNS
+    from RNS.Interfaces.Interface import Interface
+    _RNS_AVAILABLE = True
+except ImportError:
+    _RNS_AVAILABLE = True # Placeholder for class definition
+    class Interface:
+        MODE_FULL = 0
+        MODE_POINT_TO_POINT = 1
+        MODE_ACCESS_POINT = 2
+        MODE_ROAMING = 3
+        MODE_BOUNDARY = 4
+        MODE_GATEWAY = 5
+        def __init__(self, *args, **kwargs): pass
+    _RNS_AVAILABLE = False
 
 try:
     import RPi.GPIO as GPIO
@@ -490,30 +503,32 @@ class LoRaHAMInterface(Interface):
             self._radio.start_rx()
             self.online = True
 
-            RNS.log(
-                f"[{self}] LoRaHAM interface online – "
-                f"freq={self.frequency/1e6:.3f} MHz  "
-                f"bw={actual_bw/1000:.0f}kHz  "
-                f"sf={self.spreading_factor}  "
-                f"cr=4/{self.coding_rate}  "
-                f"txp={self.tx_power}dBm",
-                RNS.LOG_NOTICE,
-            )
-            RNS.log(
-                f"[{self}] Hardware: "
-                f"dio0={self.pin_dio0}  "
-                f"reset={self.pin_reset}  "
-                f"spi={self.spi_bus}:{self.spi_cs}  "
-                f"chip v0x{ver:02X}",
-                RNS.LOG_VERBOSE,
-            )
+            if _RNS_AVAILABLE:
+                RNS.log(
+                    f"[{self}] LoRaHAM interface online – "
+                    f"freq={self.frequency/1e6:.3f} MHz  "
+                    f"bw={actual_bw/1000:.0f}kHz  "
+                    f"sf={self.spreading_factor}  "
+                    f"cr=4/{self.coding_rate}  "
+                    f"txp={self.tx_power}dBm",
+                    RNS.LOG_NOTICE,
+                )
+                RNS.log(
+                    f"[{self}] Hardware: "
+                    f"dio0={self.pin_dio0}  "
+                    f"reset={self.pin_reset}  "
+                    f"spi={self.spi_bus}:{self.spi_cs}  "
+                    f"chip v0x{ver:02X}",
+                    RNS.LOG_VERBOSE,
+                )
 
         except Exception:
-            RNS.log(
-                f"[{self}] Failed to initialise LoRaHAM hardware:\n" +
-                traceback.format_exc(),
-                RNS.LOG_ERROR,
-            )
+            if _RNS_AVAILABLE:
+                RNS.log(
+                    f"[{self}] Failed to initialise LoRaHAM hardware:\n" +
+                    traceback.format_exc(),
+                    RNS.LOG_ERROR,
+                )
             self.online = False
             raise
 
@@ -538,7 +553,8 @@ class LoRaHAMInterface(Interface):
 
                 if flags & IRQ_RX_DONE:
                     if flags & IRQ_PAYLOAD_CRC_ERR:
-                        RNS.log(f'[{self}] CRC error – packet discarded', RNS.LOG_DEBUG)
+                        if _RNS_AVAILABLE:
+                            RNS.log(f'[{self}] CRC error – packet discarded', RNS.LOG_DEBUG)
                         self._radio.clear_irq_flags(IRQ_RX_DONE | IRQ_PAYLOAD_CRC_ERR)
                         self._radio.start_rx(clear_irqs=False)
                     else:
@@ -549,11 +565,12 @@ class LoRaHAMInterface(Interface):
 
             except Exception:
                 if not self._poll_stop.is_set():
-                    RNS.log(
-                        f'[{self}] Exception in IRQ poll loop:\n' +
-                        traceback.format_exc(),
-                        RNS.LOG_ERROR,
-                    )
+                    if _RNS_AVAILABLE:
+                        RNS.log(
+                            f'[{self}] Exception in IRQ poll loop:\n' +
+                            traceback.format_exc(),
+                            RNS.LOG_ERROR,
+                        )
             time.sleep(0.002)   # 2 ms – fast enough, low CPU (~0.1%)
 
     # ------------------------------------------------------------------
