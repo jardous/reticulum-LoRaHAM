@@ -145,19 +145,11 @@ Each interface must have a unique `[[Interface Name]]` and specify its own hardw
 
 ---
 
-## Packet framing & Fragmentation
+## On-air framing
 
-The SX127x hardware FIFO is limited to 255 bytes. Reticulum's transport MTU is 500 bytes. This interface handles fragmentation and reassembly internally to support the full 500-byte MTU.
+Raw Reticulum bytes are sent directly over LoRa with no additional header — identical to RNodeInterface. This makes LoRaHAMInterface fully interoperable with RNode hardware on the same frequency and settings.
 
-Each LoRa frame is prefixed with a **1-byte control flag**:
-
-| Flag | Meaning |
-|---|---|
-| `0x00` | **Single Frame:** Complete RNS packet (up to 254 bytes) |
-| `0x01` | **Fragment 1:** First half of a fragmented packet |
-| `0x02` | **Fragment 2:** Final half of a fragmented packet |
-
-Fragmentation is transparent to Reticulum; the interface reports an `HW_MTU` of 500 bytes.
+`HW_MTU` is set to 255 bytes (the SX127x FIFO limit). Reticulum will not attempt to send packets larger than this through the interface.
 
 ---
 
