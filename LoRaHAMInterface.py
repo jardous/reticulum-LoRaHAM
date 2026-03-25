@@ -124,23 +124,14 @@ BW_MAP = {
     500000: 0x90,
 }
 
-# Framing
-# The SX127x reports exact received byte count via REG_RX_NB_BYTES so no
-# length header is needed — the full 255-byte FIFO is available for payload.
-# Reticulum's transport MTU is 500 bytes; we fragment oversized packets into
-# two LoRa frames using a minimal 1-byte flag header.
+# On-air framing
+# Raw Reticulum bytes are sent directly — no prefix header — identical to
+# RNodeInterface. This ensures interoperability with RNode hardware.
+# HW_MTU is set to MAX_LORA_PKT so Reticulum never hands us a packet that
+# exceeds the SX127x FIFO.
 MAX_LORA_PKT  = 255          # SX127x hardware FIFO limit
-FRAG_OVERHEAD = 1            # 1 byte flags
-MAX_SINGLE    = MAX_LORA_PKT                  # 255 B  — fits in one frame
-MAX_FRAG      = MAX_LORA_PKT - FRAG_OVERHEAD  # 254 B  — payload per fragment
-RNS_MTU       = 500          # Reticulum transport MTU
 TX_GUARD_TIME = 0.05
 FXOSC         = 32_000_000.0   # SX127x crystal frequency Hz
-
-# Frame flag byte (first byte of every on-air packet)
-FLAG_SINGLE   = 0x00   # complete single-frame packet
-FLAG_FRAG_1   = 0x01   # first fragment
-FLAG_FRAG_2   = 0x02   # second (final) fragment
 
 
 ##############################################################################
@@ -447,7 +438,6 @@ class LoRaHAMInterface(Interface):
         self._tx_done_event = threading.Event()
         self._poll_stop     = threading.Event()
         self._poll_thread   = None
-        self._rx_frag_buf   = None   # holds first fragment awaiting second
 
         self._start()
 
@@ -486,7 +476,7 @@ class LoRaHAMInterface(Interface):
             self._radio.enable_implicit_header(self.implicit_header)
 
             self.bitrate = self._calc_bitrate(actual_bw)
-            self.HW_MTU  = RNS_MTU   # we handle fragmentation internally
+            self.HW_MTU  = MAX_LORA_PKT   # raw frames, no fragmentation
 
             # Start the IRQ polling thread.
             # We poll REG_IRQ_FLAGS over SPI rather than relying on GPIO
@@ -576,38 +566,10 @@ class LoRaHAMInterface(Interface):
     # ------------------------------------------------------------------
 
     def _receive_raw(self, raw: bytes):
-        if self.implicit_header:
-            # Implicit mode – no fragmentation, just raw payload
-            self.process_incoming(raw)
-            return
-
         if len(raw) < 1:
             RNS.log(f"[{self}] RX empty frame, discarding", RNS.LOG_DEBUG)
             return
-
-        flag = raw[0]
-
-        if flag == FLAG_SINGLE:
-            # Single complete packet — payload starts at byte 1
-            self.process_incoming(raw[1:])
-
-        elif flag == FLAG_FRAG_1:
-            # First fragment — store and wait for second
-            self._rx_frag_buf = raw[1:]
-            RNS.log(f"[{self}] RX fragment 1/2 ({len(raw)-1} B)", RNS.LOG_DEBUG)
-
-        elif flag == FLAG_FRAG_2:
-            # Second (final) fragment — reassemble
-            if self._rx_frag_buf is None:
-                RNS.log(f"[{self}] RX fragment 2/2 with no preceding fragment 1 – discarding", RNS.LOG_WARNING)
-                return
-            reassembled = self._rx_frag_buf + raw[1:]
-            self._rx_frag_buf = None
-            RNS.log(f"[{self}] RX reassembled {len(reassembled)} B from 2 fragments", RNS.LOG_DEBUG)
-            self.process_incoming(reassembled)
-
-        else:
-            RNS.log(f"[{self}] RX unknown flag 0x{flag:02X} – discarding", RNS.LOG_DEBUG)
+        self.process_incoming(raw)
 
     # ------------------------------------------------------------------
     # Transmit
@@ -630,36 +592,15 @@ class LoRaHAMInterface(Interface):
 
         with self._tx_lock:
             try:
-                if self.implicit_header:
-                    # Implicit mode – no fragmentation, always transmit a full frame
-                    self._tx_frame(data)
-                    RNS.log(f"[{self}] TX fixed-size frame {len(data)} B", RNS.LOG_DEBUG)
-
-                elif pkt_len <= MAX_LORA_PKT - 1:
-                    # Fits in one frame: [FLAG_SINGLE][payload]
-                    self._tx_frame(bytes([FLAG_SINGLE]) + data)
-                    RNS.log(f"[{self}] TX single frame {pkt_len} B", RNS.LOG_DEBUG)
-
-                elif pkt_len <= MAX_FRAG * 2:
-                    # Split into two fragments
-                    chunk1 = data[:MAX_FRAG]
-                    chunk2 = data[MAX_FRAG:]
-                    self._tx_frame(bytes([FLAG_FRAG_1]) + chunk1)
-                    self._tx_frame(bytes([FLAG_FRAG_2]) + chunk2)
+                if pkt_len > MAX_LORA_PKT:
                     RNS.log(
-                        f"[{self}] TX fragmented {pkt_len} B "
-                        f"→ {len(chunk1)} + {len(chunk2)} B",
-                        RNS.LOG_DEBUG,
-                    )
-
-                else:
-                    # Should never happen with RNS_MTU = 500
-                    RNS.log(
-                        f"[{self}] TX packet too large ({pkt_len} B) – dropping.",
+                        f"[{self}] TX packet too large ({pkt_len} B > {MAX_LORA_PKT} B) – dropping.",
                         RNS.LOG_ERROR,
                     )
                     return
 
+                self._tx_frame(data)
+                RNS.log(f"[{self}] TX {pkt_len} B", RNS.LOG_DEBUG)
                 self.txb += pkt_len
 
             except Exception:
