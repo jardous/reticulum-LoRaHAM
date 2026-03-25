@@ -7,28 +7,33 @@
 # Place this file in ~/.reticulum/interfaces/
 # Add to ~/.reticulum/config:
 #
-#   [[LoRaHAM 433]]
+#   [[LoRaHAM 868]]
 #     type              = LoRaHAMInterface
 #     interface_enabled = yes
-#     frequency         = 433775000
+#     frequency         = 868100000
 #     bandwidth         = 125000
 #     spreading_factor  = 7
 #     coding_rate       = 5
 #     tx_power          = 17
 #     # Optional:
+#     # pin_cs          = 26
+#     # pin_dio0        = 16
+#     # pin_reset       = 6
 #     # sync_word       = 0x12
 #     # preamble_length = 8
 #     # mode            = full
 #
 # Hardware requirements (LoRaHAM Pi HAT, BCM pin numbering):
-#   SPI0 CE0  (BCM 8)  → SX127x NSS
 #   SPI0 MOSI (BCM 10) → SX127x MOSI
 #   SPI0 MISO (BCM 9)  → SX127x MISO
 #   SPI0 SCLK (BCM 11) → SX127x SCK
-#   BCM 25             → SX127x DIO0  (RxDone / TxDone)
-#   BCM 5              → SX127x RESET
+#   BCM 26             → SX127x NSS  (GPIO chip-select, not hardware CE)
+#   BCM 16             → SX127x DIO0  (RxDone / TxDone)
+#   BCM 6              → SX127x RESET
 #
-# Adjust PIN_DIO0 / PIN_RESET below if your HAT wiring differs.
+# The CS line (NSS) is driven manually as a GPIO because the HAT does not
+# use the hardware SPI CE pins.  spidev is opened with no_cs=True.
+# Adjust pin_cs / pin_dio0 / pin_reset in config if your wiring differs.
 #
 # Licence: MIT  –  © 2026
 ##############################################################################
@@ -143,36 +148,60 @@ class _SX127x:
     All register names match the Semtech SX1276 datasheet.
     """
 
-    def __init__(self, pin_dio0, pin_reset, spi_bus=0, spi_cs=0, spi_speed=5_000_000):
-        self.pin_dio0 = pin_dio0
+    def __init__(self, pin_dio0, pin_reset, spi_bus=0, spi_cs=0, spi_speed=5_000_000,
+                 pin_cs=None):
+        self.pin_dio0  = pin_dio0
         self.pin_reset = pin_reset
+        self._pin_cs   = pin_cs
         self._lock = threading.RLock()
 
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
-        GPIO.setup(self.pin_reset, GPIO.OUT,  initial=GPIO.HIGH)
+        GPIO.setup(self.pin_reset, GPIO.OUT, initial=GPIO.HIGH)
         GPIO.setup(self.pin_dio0,  GPIO.IN,  pull_up_down=GPIO.PUD_DOWN)
+        if self._pin_cs is not None:
+            GPIO.setup(self._pin_cs, GPIO.OUT, initial=GPIO.HIGH)
 
         self._spi = spidev.SpiDev()
         self._spi.open(spi_bus, spi_cs)
         self._spi.max_speed_hz = spi_speed
         self._spi.mode = 0b00
+        if self._pin_cs is not None:
+            self._spi.no_cs = True
         self._implicit_header = False
         self._mode_base = MODE_LONG_RANGE
+
+    def _cs_low(self):
+        if self._pin_cs is not None:
+            GPIO.output(self._pin_cs, GPIO.LOW)
+
+    def _cs_high(self):
+        if self._pin_cs is not None:
+            GPIO.output(self._pin_cs, GPIO.HIGH)
 
     # ---- SPI primitives --------------------------------------------------
 
     def _read(self, reg):
-        return self._spi.xfer2([reg & 0x7F, 0x00])[1]
+        self._cs_low()
+        result = self._spi.xfer2([reg & 0x7F, 0x00])[1]
+        self._cs_high()
+        return result
 
     def _write(self, reg, val):
+        self._cs_low()
         self._spi.xfer2([reg | 0x80, val & 0xFF])
+        self._cs_high()
 
     def _read_burst(self, reg, length):
-        return self._spi.xfer2([reg & 0x7F] + [0x00] * length)[1:]
+        self._cs_low()
+        result = self._spi.xfer2([reg & 0x7F] + [0x00] * length)[1:]
+        self._cs_high()
+        return result
 
     def _write_burst(self, reg, data):
+        self._cs_low()
         self._spi.xfer2([reg | 0x80] + list(data))
+        self._cs_high()
 
     # ---- Hardware reset --------------------------------------------------
 
@@ -416,10 +445,12 @@ class LoRaHAMInterface(Interface):
         self.implicit_header  = configuration.get("implicit_header", False)
 
         # Hardware pin/bus config
-        self.pin_dio0         = int(configuration.get("pin_dio0", 25))
-        self.pin_reset        = int(configuration.get("pin_reset", 5))
-        self.spi_bus          = int(configuration.get("spi_bus", 0))
-        self.spi_cs           = int(configuration.get("spi_cs", 0))
+        self.pin_dio0         = int(configuration.get("pin_dio0",  16))
+        self.pin_reset        = int(configuration.get("pin_reset",  6))
+        self.spi_bus          = int(configuration.get("spi_bus",    0))
+        self.spi_cs           = int(configuration.get("spi_cs",     0))
+        pin_cs_raw = configuration.get("pin_cs", 26)
+        self.pin_cs           = int(pin_cs_raw) if pin_cs_raw not in (None, "none", "None", "") else None
 
         # Reticulum interface mode
         mode_str = configuration.get("mode", "full").lower().strip()
@@ -450,6 +481,7 @@ class LoRaHAMInterface(Interface):
                 pin_reset=self.pin_reset,
                 spi_bus=self.spi_bus,
                 spi_cs=self.spi_cs,
+                pin_cs=self.pin_cs,
             )
             self._radio.reset()
 

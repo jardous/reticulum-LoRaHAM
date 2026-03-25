@@ -617,10 +617,11 @@ def parse_args():
     p.add_argument("--test-868",  action="store_true", help="Run specialized 868 MHz compatibility tests")
     p.add_argument("--implicit-header", action="store_true", help="Enable LoRa implicit header mode")
     # Hardware config
-    p.add_argument("--pin-dio0",  type=int, default=25,   help="BCM pin for DIO0")
-    p.add_argument("--pin-reset", type=int, default=5,    help="BCM pin for RESET")
+    p.add_argument("--pin-dio0",  type=int, default=16,   help="BCM pin for DIO0")
+    p.add_argument("--pin-reset", type=int, default=6,    help="BCM pin for RESET")
+    p.add_argument("--pin-cs",    type=int, default=26,   help="BCM pin for GPIO chip-select (NSS)")
     p.add_argument("--spi-bus",   type=int, default=0,    help="SPI bus number")
-    p.add_argument("--spi-cs",    type=int, default=0,    help="SPI chip select")
+    p.add_argument("--spi-cs",    type=int, default=0,    help="SPI device number (usually 0)")
     return p.parse_args()
 
 
@@ -630,10 +631,7 @@ def main():
     # If --test-868 is used, switch to 868 MHz module defaults unless the user
     # explicitly supplied those arguments on the command line.
     if args.test_868:
-        if args.freq     == 433_775_000: args.freq      = 868_125_000
-        if args.pin_dio0 == 25:          args.pin_dio0  = 16
-        if args.pin_reset == 5:          args.pin_reset = 6
-        if args.spi_cs   == 0:           args.spi_cs    = 1
+        if args.freq == 433_775_000: args.freq = 868_125_000
 
     print("╔══════════════════════════════════════════════════════════╗")
     print("║        LoRaHAM Pi / SX127x  –  Interface Test Suite      ║")
@@ -644,6 +642,7 @@ def main():
     print(f"  TX power   : {args.power} dBm")
     print(f"  DIO0 pin   : BCM {args.pin_dio0}")
     print(f"  RESET pin  : BCM {args.pin_reset}")
+    print(f"  CS pin     : BCM {args.pin_cs}")
     print(f"  SPI bus    : {args.spi_bus}:{args.spi_cs}")
     if args.implicit_header:
         print(f"  Implicit   : Enabled")
@@ -656,6 +655,7 @@ def main():
             pin_reset=args.pin_reset,
             spi_bus=args.spi_bus,
             spi_cs=args.spi_cs,
+            pin_cs=args.pin_cs,
         )
         radio.reset()
         time.sleep(0.05)
