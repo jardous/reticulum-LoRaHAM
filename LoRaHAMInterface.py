@@ -31,9 +31,10 @@
 #   BCM 16             → SX127x DIO0  (RxDone / TxDone)
 #   BCM 6              → SX127x RESET
 #
-# The CS line (NSS) is driven manually as a GPIO because the HAT does not
-# use the hardware SPI CE pins.  spidev is opened with no_cs=True.
-# Adjust pin_cs / pin_dio0 / pin_reset in config if your wiring differs.
+# The CS line (NSS) is driven manually via BCM 26 (GPIO output).  spidev is
+# opened as spidev0.1 (CE1/BCM7) which is unconnected on this HAT, so its
+# hardware CS toggling is harmless.  Adjust pin_cs / pin_dio0 / pin_reset
+# and spi_cs in config if your wiring differs.
 #
 # Licence: MIT  –  © 2026
 ##############################################################################
@@ -166,8 +167,6 @@ class _SX127x:
         self._spi.open(spi_bus, spi_cs)
         self._spi.max_speed_hz = spi_speed
         self._spi.mode = 0b00
-        if self._pin_cs is not None:
-            self._spi.no_cs = True
         self._implicit_header = False
         self._mode_base = MODE_LONG_RANGE
 
@@ -448,7 +447,7 @@ class LoRaHAMInterface(Interface):
         self.pin_dio0         = int(configuration.get("pin_dio0",  16))
         self.pin_reset        = int(configuration.get("pin_reset",  6))
         self.spi_bus          = int(configuration.get("spi_bus",    0))
-        self.spi_cs           = int(configuration.get("spi_cs",     0))
+        self.spi_cs           = int(configuration.get("spi_cs",     1))
         pin_cs_raw = configuration.get("pin_cs", 26)
         self.pin_cs           = int(pin_cs_raw) if pin_cs_raw not in (None, "none", "None", "") else None
 

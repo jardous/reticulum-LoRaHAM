@@ -621,7 +621,7 @@ def parse_args():
     p.add_argument("--pin-reset", type=int, default=6,    help="BCM pin for RESET")
     p.add_argument("--pin-cs",    type=int, default=26,   help="BCM pin for GPIO chip-select (NSS)")
     p.add_argument("--spi-bus",   type=int, default=0,    help="SPI bus number")
-    p.add_argument("--spi-cs",    type=int, default=0,    help="SPI device number (usually 0)")
+    p.add_argument("--spi-cs",    type=int, default=1,    help="SPI device number (1 = /dev/spidev0.1)")
     return p.parse_args()
 
 
