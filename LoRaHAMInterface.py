@@ -155,7 +155,7 @@ class _SX127x:
     def __init__(self, pin_dio0, pin_reset, spi_bus=0, spi_cs=0, spi_speed=5_000_000):
         self.pin_dio0 = pin_dio0
         self.pin_reset = pin_reset
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
