@@ -25,8 +25,8 @@
 #   SPI0 MOSI (BCM 10) → SX127x MOSI
 #   SPI0 MISO (BCM 9)  → SX127x MISO
 #   SPI0 SCLK (BCM 11) → SX127x SCK
-#   BCM 4              → SX127x DIO0  (RxDone / TxDone)
-#   BCM 17             → SX127x RESET
+#   BCM 25             → SX127x DIO0  (RxDone / TxDone)
+#   BCM 5              → SX127x RESET
 #
 # Adjust PIN_DIO0 / PIN_RESET below if your HAT wiring differs.
 #

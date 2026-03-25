@@ -183,6 +183,37 @@ def test_spi_and_version(radio):
     result("SX127x version byte valid",  ver in (0x11, 0x12), f"0x{ver:02X}")
 
 
+def test_reset_pin(radio):
+    """
+    Verify the RESET pin is correctly wired by checking that a hardware reset
+    restores REG_PA_CONFIG to its power-on default (0x4F).
+    If the RESET pin is wrong the register retains the value we wrote.
+    """
+    section("2a. RESET pin verification")
+
+    # Write a value that differs from the 0x4F power-on default
+    radio._write(REG_PA_CONFIG, 0x7F)
+    written = radio._read(REG_PA_CONFIG)
+    if written != 0x7F:
+        result("RESET pre-condition: write 0x7F to PA_CONFIG", False,
+               f"SPI write/read broken: got 0x{written:02X}")
+        return
+
+    radio.reset()
+    time.sleep(0.01)
+
+    # After hardware reset the chip is in FSK mode; PA_CONFIG default is 0x4F
+    pa_after = radio._read(REG_PA_CONFIG)
+    result("RESET pin: PA_CONFIG reverts to 0x4F after hardware reset",
+           pa_after == 0x4F,
+           f"got 0x{pa_after:02X}  (0x4F=pass, 0x7F=RESET pin not toggling)")
+
+    # Restore LoRa mode so subsequent tests work
+    radio._write(REG_OP_MODE, MODE_LONG_RANGE | MODE_SLEEP)
+    time.sleep(0.01)
+    radio.set_mode(MODE_STDBY)
+
+
 def test_mode_switching(radio):
     section("2. OP_MODE register – mode switching")
     for name, mode in [("SLEEP", MODE_SLEEP), ("STDBY", MODE_STDBY)]:
@@ -326,7 +357,7 @@ def test_dio0_pin_diagnostic(radio):
 
     # Read current level of the configured pin and a few neighbours
     pin_dio0 = radio.pin_dio0
-    candidates = sorted(set([pin_dio0, 4, 5, 6, 25, 24, 23, 22]))
+    candidates = sorted(set([pin_dio0, 5, 6, 16, 25, 24, 23, 22]))
     print(f"  [{INFO}] Sampling BCM pins: {candidates}")
     print(f"  [{INFO}] Configured PIN_DIO0 = BCM {pin_dio0}")
 
@@ -581,8 +612,8 @@ def parse_args():
     p.add_argument("--test-868",  action="store_true", help="Run specialized 868 MHz compatibility tests")
     p.add_argument("--implicit-header", action="store_true", help="Enable LoRa implicit header mode")
     # Hardware config
-    p.add_argument("--pin-dio0",  type=int, default=4,    help="BCM pin for DIO0")
-    p.add_argument("--pin-reset", type=int, default=17,   help="BCM pin for RESET")
+    p.add_argument("--pin-dio0",  type=int, default=25,   help="BCM pin for DIO0")
+    p.add_argument("--pin-reset", type=int, default=5,    help="BCM pin for RESET")
     p.add_argument("--spi-bus",   type=int, default=0,    help="SPI bus number")
     p.add_argument("--spi-cs",    type=int, default=0,    help="SPI chip select")
     return p.parse_args()
@@ -591,9 +622,13 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # If --test-868 is used, override default frequency
-    if args.test_868 and args.freq == 433_775_000:
-        args.freq = 868_125_000
+    # If --test-868 is used, switch to 868 MHz module defaults unless the user
+    # explicitly supplied those arguments on the command line.
+    if args.test_868:
+        if args.freq     == 433_775_000: args.freq      = 868_125_000
+        if args.pin_dio0 == 25:          args.pin_dio0  = 16
+        if args.pin_reset == 5:          args.pin_reset = 6
+        if args.spi_cs   == 0:           args.spi_cs    = 1
 
     print("╔══════════════════════════════════════════════════════════╗")
     print("║        LoRaHAM Pi / SX127x  –  Interface Test Suite      ║")
@@ -666,6 +701,7 @@ def main():
         else:
             # Full register / hardware test suite
             test_spi_and_version(radio)
+            test_reset_pin(radio)
             test_mode_switching(radio)
             test_frequency(radio, args.freq)
             test_modem_config(radio, args.bw, args.sf, args.cr)
@@ -694,6 +730,7 @@ def main():
             radio.enable_crc(True)
 
             safe_test(test_transmit, radio, count=args.count)
+            safe_test(test_dio0_pin_diagnostic, radio)
             safe_test(test_rx_listen, radio, timeout_s=args.timeout)
 
     except KeyboardInterrupt:
