@@ -105,26 +105,39 @@ Make sure SPI is enabled on the Pi: `sudo raspi-config` → Interfaces → SPI �
 
 ## Multiple Interfaces
 
-You can run multiple LoRa modules on the same Raspberry Pi, for example to
-bridge a 433 MHz and an 868 MHz network. Add a configuration block for
-each interface and specify the correct hardware pins and SPI bus:
+You can run multiple LoRa modules on the same Raspberry Pi to bridge different networks (e.g., a 433 MHz "long range" and an 868 MHz "fast local" network).
+
+Each interface must have a unique `[[Interface Name]]` and specify its own hardware pins and SPI chip select.
 
 ```ini
+# --- Interface 1: 433 MHz (Standard LoRaHAM Pi HAT defaults) ---
 [[LoRaHAM 433]]
   type              = LoRaHAMInterface
   interface_enabled = yes
   frequency         = 433775000
-  # ... other radio params
+  bandwidth         = 125000
+  spreading_factor  = 9
+  coding_rate       = 5
+  tx_power          = 17
+  
+  # Hardware pins for HAT 1
   pin_dio0          = 4
   pin_reset         = 17
   spi_bus           = 0
   spi_cs            = 0
 
+# --- Interface 2: 868 MHz (Example secondary module) ---
 [[LoRaHAM 868]]
   type              = LoRaHAMInterface
   interface_enabled = yes
-  frequency         = 868100000
-  # ... other radio params
+  frequency         = 868125000
+  bandwidth         = 250000
+  spreading_factor  = 7
+  coding_rate       = 5
+  tx_power          = 14
+  
+  # Hardware pins for HAT 2 / External module
+  # (Example pins – adjust to your actual wiring)
   pin_dio0          = 22
   pin_reset         = 23
   spi_bus           = 0
@@ -133,18 +146,19 @@ each interface and specify the correct hardware pins and SPI bus:
 
 ---
 
-## Packet framing
+## Packet framing & Fragmentation
 
-Each Reticulum packet is prefixed with a 2-byte big-endian length header
-before being written to the SX127x FIFO:
+The SX127x hardware FIFO is limited to 255 bytes. Reticulum's transport MTU is 500 bytes. This interface handles fragmentation and reassembly internally to support the full 500-byte MTU.
 
-```
-[ len_hi (1 B) ][ len_lo (1 B) ][ RNS packet bytes (≤ 253 B) ]
-```
+Each LoRa frame is prefixed with a **1-byte control flag**:
 
-The SX127x FIFO is 255 bytes, leaving **253 bytes** of usable payload per
-LoRa transmission. Reticulum's transport layer handles fragmentation
-transparently.
+| Flag | Meaning |
+|---|---|
+| `0x00` | **Single Frame:** Complete RNS packet (up to 254 bytes) |
+| `0x01` | **Fragment 1:** First half of a fragmented packet |
+| `0x02` | **Fragment 2:** Final half of a fragmented packet |
+
+Fragmentation is transparent to Reticulum; the interface reports an `HW_MTU` of 500 bytes.
 
 ---
 

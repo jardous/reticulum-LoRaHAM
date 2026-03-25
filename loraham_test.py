@@ -390,16 +390,46 @@ def test_dio0_pin_diagnostic(radio):
                "no pulse seen – check DIO0 wiring to SX127x")
 
 
-def test_rssi(radio):
+def test_rssi(radio, freq_hz):
     section("11. RSSI / noise floor (ambient)")
     radio.start_rx()
     time.sleep(0.2)
     # Read wideband RSSI (available in RX mode)
     raw = radio._read(0x2C)    # REG_RSSI_WIDEBAND
-    rssi = -157 + raw          # SX1276 formula for 433 MHz front-end
+    
+    # RSSI calculation depends on the frequency band
+    if freq_hz < 525_000_000:
+        rssi = -157 + raw      # LF band (433 MHz etc)
+    else:
+        rssi = -164 + raw      # HF band (868/915 MHz etc)
+        
     result("RSSI register readable", raw != 0x00 and raw != 0xFF,
            f"raw=0x{raw:02X}  ≈{rssi} dBm ambient")
-    print(f"  [{INFO}] Ambient RSSI ≈ {rssi} dBm")
+    print(f"  [{INFO}] Ambient RSSI ≈ {rssi} dBm (at {freq_hz/1e6:.1f} MHz)")
+
+
+def test_868_compatibility(radio):
+    section("15. 868 MHz band compatibility test")
+    target_freq = 868_125_000
+    radio.set_mode(MODE_STDBY)
+    radio.set_freq(target_freq)
+    
+    # Verify LowFrequencyModeOn bit is NOT set for HF
+    op_mode = radio._read(REG_OP_MODE)
+    lf_bit_set = bool(op_mode & 0x08)
+    
+    msb = radio._read(REG_FR_MSB)
+    mid = radio._read(REG_FR_MID)
+    lsb = radio._read(REG_FR_LSB)
+    read_back = freq_from_regs(msb, mid, lsb)
+    error_hz  = abs(read_back - target_freq)
+    
+    res1 = result("Frequency 868.125 MHz set accurately", error_hz < 1000,
+                  f"read={read_back/1e6:.4f} MHz")
+    res2 = result("LowFrequencyModeOn bit is correctly DISABLED for HF", not lf_bit_set,
+                  f"REG_OP_MODE=0x{op_mode:02X}")
+    
+    return res1 and res2
 
 
 def test_transmit(radio, count=3):
@@ -548,6 +578,7 @@ def parse_args():
     p.add_argument("--loopback",  action="store_true")
     p.add_argument("--rx-only",   action="store_true")
     p.add_argument("--tx-only",   action="store_true")
+    p.add_argument("--test-868",  action="store_true", help="Run specialized 868 MHz compatibility tests")
     p.add_argument("--implicit-header", action="store_true", help="Enable LoRa implicit header mode")
     # Hardware config
     p.add_argument("--pin-dio0",  type=int, default=4,    help="BCM pin for DIO0")
@@ -559,6 +590,10 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    # If --test-868 is used, override default frequency
+    if args.test_868 and args.freq == 433_775_000:
+        args.freq = 868_125_000
 
     print("╔══════════════════════════════════════════════════════════╗")
     print("║        LoRaHAM Pi / SX127x  –  Interface Test Suite      ║")
@@ -640,7 +675,10 @@ def main():
             test_dio_mapping(radio)
             test_irq_flags_clear(radio)
             test_rx_mode(radio)
-            test_rssi(radio)
+            test_rssi(radio, args.freq)
+
+            if args.test_868:
+                test_868_compatibility(radio)
 
             # Re-apply chosen config before on-air tests
             radio.set_mode(MODE_STDBY)

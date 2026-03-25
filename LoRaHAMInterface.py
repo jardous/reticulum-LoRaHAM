@@ -85,6 +85,7 @@ REG_PA_DAC              = 0x4D
 
 # REG_OP_MODE bits
 MODE_LONG_RANGE = 0x80   # LoRa mode flag
+MODE_LF_BAND    = 0x08   # Low Frequency Mode (bit 3) for bands < 525 MHz
 MODE_SLEEP      = 0x00
 MODE_STDBY      = 0x01
 MODE_TX         = 0x03
@@ -114,11 +115,11 @@ BW_MAP = {
 # The SX127x reports exact received byte count via REG_RX_NB_BYTES so no
 # length header is needed — the full 255-byte FIFO is available for payload.
 # Reticulum's transport MTU is 500 bytes; we fragment oversized packets into
-# two LoRa frames using a minimal 2-byte sequence header only when needed.
+# two LoRa frames using a minimal 1-byte flag header.
 MAX_LORA_PKT  = 255          # SX127x hardware FIFO limit
-FRAG_OVERHEAD = 3            # 1 byte flags + 2 byte offset for multi-frame
+FRAG_OVERHEAD = 1            # 1 byte flags
 MAX_SINGLE    = MAX_LORA_PKT                  # 255 B  — fits in one frame
-MAX_FRAG      = MAX_LORA_PKT - FRAG_OVERHEAD  # 252 B  — payload per fragment
+MAX_FRAG      = MAX_LORA_PKT - FRAG_OVERHEAD  # 254 B  — payload per fragment
 RNS_MTU       = 500          # Reticulum transport MTU
 TX_GUARD_TIME = 0.05
 FXOSC         = 32_000_000.0   # SX127x crystal frequency Hz
@@ -141,6 +142,7 @@ class _SX127x:
     def __init__(self, pin_dio0, pin_reset, spi_bus=0, spi_cs=0, spi_speed=5_000_000):
         self.pin_dio0 = pin_dio0
         self.pin_reset = pin_reset
+        self._lock = threading.Lock()
 
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
@@ -156,6 +158,7 @@ class _SX127x:
         self._spi.max_speed_hz = spi_speed
         self._spi.mode = 0b00
         self._implicit_header = False
+        self._mode_base = MODE_LONG_RANGE
 
     # ---- SPI primitives --------------------------------------------------
 
@@ -174,179 +177,209 @@ class _SX127x:
     # ---- Hardware reset --------------------------------------------------
 
     def reset(self):
-        GPIO.output(self.pin_reset, GPIO.LOW)
-        time.sleep(0.01)
-        GPIO.output(self.pin_reset, GPIO.HIGH)
-        time.sleep(0.01)
+        with self._lock:
+            GPIO.output(self.pin_reset, GPIO.LOW)
+            time.sleep(0.01)
+            GPIO.output(self.pin_reset, GPIO.HIGH)
+            time.sleep(0.01)
 
     # ---- Mode control ----------------------------------------------------
 
     def set_mode(self, mode):
-        """Set operating mode, preserving the LoRa bit."""
-        self._write(REG_OP_MODE, MODE_LONG_RANGE | mode)
-        # Wait until mode is accepted (up to 10 ms)
-        deadline = time.time() + 0.01
-        while time.time() < deadline:
-            if (self._read(REG_OP_MODE) & 0x07) == mode:
-                return
-            time.sleep(0.001)
+        """Set operating mode, preserving the LoRa and LF bits."""
+        with self._lock:
+            self._write(REG_OP_MODE, self._mode_base | mode)
+            # Wait until mode is accepted (up to 10 ms)
+            deadline = time.time() + 0.01
+            while time.time() < deadline:
+                if (self._read(REG_OP_MODE) & 0x07) == mode:
+                    return
+                time.sleep(0.001)
 
     def get_mode(self):
-        return self._read(REG_OP_MODE) & 0x07
+        with self._lock:
+            return self._read(REG_OP_MODE) & 0x07
 
     # ---- Frequency -------------------------------------------------------
 
     def set_freq(self, freq_hz):
-        frf = int((freq_hz / FXOSC) * (1 << 19))
-        self._write(REG_FR_MSB, (frf >> 16) & 0xFF)
-        self._write(REG_FR_MID, (frf >>  8) & 0xFF)
-        self._write(REG_FR_LSB, (frf      ) & 0xFF)
+        with self._lock:
+            frf = int((freq_hz / FXOSC) * (1 << 19))
+            self._write(REG_FR_MSB, (frf >> 16) & 0xFF)
+            self._write(REG_FR_MID, (frf >>  8) & 0xFF)
+            self._write(REG_FR_LSB, (frf      ) & 0xFF)
+            
+            # SX1276 requires LowFrequencyModeOn for bands < 525 MHz
+            if freq_hz < 525_000_000:
+                self._mode_base |= MODE_LF_BAND
+            else:
+                self._mode_base &= ~MODE_LF_BAND
 
     # ---- Modem config ----------------------------------------------------
 
     def set_bandwidth(self, bw_hz):
-        bw_key = min(BW_MAP.keys(), key=lambda k: abs(k - bw_hz))
-        bw_reg = BW_MAP[bw_key]
-        mc1 = self._read(REG_MODEM_CONFIG1)
-        self._write(REG_MODEM_CONFIG1, (mc1 & 0x0F) | bw_reg)
-        return bw_key   # return actual BW used
+        with self._lock:
+            bw_key = min(BW_MAP.keys(), key=lambda k: abs(k - bw_hz))
+            bw_reg = BW_MAP[bw_key]
+            mc1 = self._read(REG_MODEM_CONFIG1)
+            self._write(REG_MODEM_CONFIG1, (mc1 & 0x0F) | bw_reg)
+            return bw_key   # return actual BW used
 
     def set_coding_rate(self, denominator):
         """denominator: 5=4/5, 6=4/6, 7=4/7, 8=4/8"""
-        cr = max(5, min(8, denominator)) - 4   # 1..4
-        mc1 = self._read(REG_MODEM_CONFIG1)
-        self._write(REG_MODEM_CONFIG1, (mc1 & 0xF1) | (cr << 1))
+        with self._lock:
+            cr = max(5, min(8, denominator)) - 4   # 1..4
+            mc1 = self._read(REG_MODEM_CONFIG1)
+            self._write(REG_MODEM_CONFIG1, (mc1 & 0xF1) | (cr << 1))
 
     def set_spreading_factor(self, sf):
-        sf = max(6, min(12, sf))
-        if sf == 6:
-            self._write(REG_DETECTION_OPTIMIZE,  0xC5)
-            self._write(REG_DETECTION_THRESHOLD, 0x0C)
-        else:
-            self._write(REG_DETECTION_OPTIMIZE,  0xC3)
-            self._write(REG_DETECTION_THRESHOLD, 0x0A)
-        mc2 = self._read(REG_MODEM_CONFIG2)
-        self._write(REG_MODEM_CONFIG2, (mc2 & 0x0F) | ((sf << 4) & 0xF0))
+        with self._lock:
+            sf = max(6, min(12, sf))
+            if sf == 6:
+                self._write(REG_DETECTION_OPTIMIZE,  0xC5)
+                self._write(REG_DETECTION_THRESHOLD, 0x0C)
+            else:
+                self._write(REG_DETECTION_OPTIMIZE,  0xC3)
+                self._write(REG_DETECTION_THRESHOLD, 0x0A)
+            mc2 = self._read(REG_MODEM_CONFIG2)
+            self._write(REG_MODEM_CONFIG2, (mc2 & 0x0F) | ((sf << 4) & 0xF0))
 
     def set_lna_gain(self):
         """Maximum LNA gain + AGC on."""
-        mc3 = self._read(REG_MODEM_CONFIG3)
-        self._write(REG_MODEM_CONFIG3, mc3 | 0x04)   # AgcAutoOn
+        with self._lock:
+            mc3 = self._read(REG_MODEM_CONFIG3)
+            self._write(REG_MODEM_CONFIG3, mc3 | 0x04)   # AgcAutoOn
 
     def set_tx_power(self, dbm):
         """
         Use PA_BOOST (up to 20 dBm).  LoRaHAM Pi has an external PA so the
         SX127x output_power register sets the drive level into that PA.
         """
-        dbm = max(2, min(20, dbm))
-        if dbm <= 17:
-            self._write(REG_PA_DAC, 0x84)   # default PA_DAC
-            self._write(REG_PA_CONFIG, 0x80 | (dbm - 2))
-        else:
-            self._write(REG_PA_DAC, 0x87)   # high-power mode (+20 dBm)
-            self._write(REG_PA_CONFIG, 0x80 | (dbm - 5))
+        with self._lock:
+            dbm = max(2, min(20, dbm))
+            if dbm <= 17:
+                self._write(REG_PA_DAC, 0x84)   # default PA_DAC
+                self._write(REG_PA_CONFIG, 0x80 | (dbm - 2))
+            else:
+                self._write(REG_PA_DAC, 0x87)   # high-power mode (+20 dBm)
+                self._write(REG_PA_CONFIG, 0x80 | (dbm - 5))
 
     def set_sync_word(self, sw):
-        self._write(REG_SYNC_WORD, sw & 0xFF)
+        with self._lock:
+            self._write(REG_SYNC_WORD, sw & 0xFF)
 
     def set_preamble_length(self, length):
-        self._write(REG_PREAMBLE_MSB, (length >> 8) & 0xFF)
-        self._write(REG_PREAMBLE_LSB, (length     ) & 0xFF)
+        with self._lock:
+            self._write(REG_PREAMBLE_MSB, (length >> 8) & 0xFF)
+            self._write(REG_PREAMBLE_LSB, (length     ) & 0xFF)
 
     def enable_crc(self, enabled=True):
-        mc2 = self._read(REG_MODEM_CONFIG2)
-        if enabled:
-            self._write(REG_MODEM_CONFIG2, mc2 | 0x04)
-        else:
-            self._write(REG_MODEM_CONFIG2, mc2 & ~0x04)
+        with self._lock:
+            mc2 = self._read(REG_MODEM_CONFIG2)
+            if enabled:
+                self._write(REG_MODEM_CONFIG2, mc2 | 0x04)
+            else:
+                self._write(REG_MODEM_CONFIG2, mc2 & ~0x04)
 
     def enable_implicit_header(self, enabled=True):
         """Set implicit header mode; payload length is fixed."""
-        self._implicit_header = enabled
-        mc1 = self._read(REG_MODEM_CONFIG1)
-        if enabled:
-            self._write(REG_MODEM_CONFIG1, mc1 | 0x01)
-        else:
-            self._write(REG_MODEM_CONFIG1, mc1 & ~0x01)
+        with self._lock:
+            self._implicit_header = enabled
+            mc1 = self._read(REG_MODEM_CONFIG1)
+            if enabled:
+                self._write(REG_MODEM_CONFIG1, mc1 | 0x01)
+            else:
+                self._write(REG_MODEM_CONFIG1, mc1 & ~0x01)
 
     # ---- DIO mapping -----------------------------------------------------
 
     def set_dio0_rxdone(self):
         """DIO0 → RxDone (00 in bits 7:6 of DIO_MAPPING1)."""
-        v = self._read(REG_DIO_MAPPING1)
-        self._write(REG_DIO_MAPPING1, v & 0x3F)
+        with self._lock:
+            v = self._read(REG_DIO_MAPPING1)
+            self._write(REG_DIO_MAPPING1, v & 0x3F)
 
     def set_dio0_txdone(self):
         """DIO0 → TxDone (01 in bits 7:6 of DIO_MAPPING1)."""
-        v = self._read(REG_DIO_MAPPING1)
-        self._write(REG_DIO_MAPPING1, (v & 0x3F) | 0x40)
+        with self._lock:
+            v = self._read(REG_DIO_MAPPING1)
+            self._write(REG_DIO_MAPPING1, (v & 0x3F) | 0x40)
 
     # ---- FIFO / packet ---------------------------------------------------
 
-    def start_rx(self):
-        if self._implicit_header:
-            self._write(REG_PAYLOAD_LENGTH, MAX_LORA_PKT)
-        self._write(REG_FIFO_RX_BASE_ADDR, 0x00)
-        self._write(REG_FIFO_ADDR_PTR,     0x00)
-        self._write(REG_IRQ_FLAGS, 0xFF)   # clear all IRQs
-        self.set_dio0_rxdone()
-        self.set_mode(MODE_RX_CONT)
+    def start_rx(self, clear_irqs=True):
+        with self._lock:
+            if self._implicit_header:
+                self._write(REG_PAYLOAD_LENGTH, MAX_LORA_PKT)
+            self._write(REG_FIFO_RX_BASE_ADDR, 0x00)
+            self._write(REG_FIFO_ADDR_PTR,     0x00)
+            if clear_irqs:
+                self._write(REG_IRQ_FLAGS, 0xFF)   # clear all IRQs
+            self.set_dio0_rxdone()
+            self._write(REG_OP_MODE, self._mode_base | MODE_RX_CONT)
 
     def read_packet(self):
         """Read the last received packet bytes from the FIFO."""
-        # Move FIFO pointer to start of received packet
-        ptr = self._read(REG_FIFO_RX_CURRENT_ADDR)
-        self._write(REG_FIFO_ADDR_PTR, ptr)
+        with self._lock:
+            # Move FIFO pointer to start of received packet
+            ptr = self._read(REG_FIFO_RX_CURRENT_ADDR)
+            self._write(REG_FIFO_ADDR_PTR, ptr)
 
-        if self._implicit_header:
-            n = MAX_LORA_PKT
-        else:
-            n = self._read(REG_RX_NB_BYTES)
+            if self._implicit_header:
+                n = MAX_LORA_PKT
+            else:
+                n = self._read(REG_RX_NB_BYTES)
 
-        data = bytes(self._read_burst(REG_FIFO, n))
-        self._write(REG_IRQ_FLAGS, 0xFF)   # clear
-        return data
+            data = bytes(self._read_burst(REG_FIFO, n))
+            self._write(REG_IRQ_FLAGS, IRQ_RX_DONE | IRQ_VALID_HEADER | IRQ_PAYLOAD_CRC_ERR)
+            return data
 
     def send_packet(self, data: bytes):
-        """Transmit a packet; blocks until TxDone or 5 s timeout."""
-        self.set_mode(MODE_STDBY)
-        self._write(REG_FIFO_TX_BASE_ADDR, 0x00)
-        self._write(REG_FIFO_ADDR_PTR,     0x00)
+        """Transmit a packet."""
+        with self._lock:
+            self._write(REG_OP_MODE, self._mode_base | MODE_STDBY)
+            self._write(REG_FIFO_TX_BASE_ADDR, 0x00)
+            self._write(REG_FIFO_ADDR_PTR,     0x00)
 
-        if self._implicit_header:
-            payload_len = MAX_LORA_PKT
-            data = data.ljust(MAX_LORA_PKT, b'\x00')
-        else:
-            payload_len = len(data)
+            if self._implicit_header:
+                payload_len = MAX_LORA_PKT
+                data = data.ljust(MAX_LORA_PKT, b'\x00')
+            else:
+                payload_len = len(data)
 
-        self._write_burst(REG_FIFO, data)
-        self._write(REG_PAYLOAD_LENGTH, payload_len)
-        self._write(REG_IRQ_FLAGS, 0xFF)
-        self.set_dio0_txdone()
-        self.set_mode(MODE_TX)
+            self._write_burst(REG_FIFO, data)
+            self._write(REG_PAYLOAD_LENGTH, payload_len)
+            self._write(REG_IRQ_FLAGS, 0xFF)
+            v = self._read(REG_DIO_MAPPING1)
+            self._write(REG_DIO_MAPPING1, (v & 0x3F) | 0x40)
+            self._write(REG_OP_MODE, self._mode_base | MODE_TX)
 
     def get_irq_flags(self):
-        return self._read(REG_IRQ_FLAGS)
+        with self._lock:
+            return self._read(REG_IRQ_FLAGS)
 
-    def clear_irq_flags(self):
-        self._write(REG_IRQ_FLAGS, 0xFF)
+    def clear_irq_flags(self, mask=0xFF):
+        with self._lock:
+            self._write(REG_IRQ_FLAGS, mask)
 
     def version(self):
-        return self._read(REG_VERSION)
+        with self._lock:
+            return self._read(REG_VERSION)
 
     def close(self):
-        try:
-            self.set_mode(MODE_SLEEP)
-        except Exception:
-            pass
-        try:
-            self._spi.close()
-        except Exception:
-            pass
-        try:
-            GPIO.cleanup([self.pin_dio0, self.pin_reset])
-        except Exception:
-            pass
+        with self._lock:
+            try:
+                self._write(REG_OP_MODE, self._mode_base | MODE_SLEEP)
+            except Exception:
+                pass
+            try:
+                self._spi.close()
+            except Exception:
+                pass
+            try:
+                GPIO.cleanup([self.pin_dio0, self.pin_reset])
+            except Exception:
+                pass
 
 
 ##############################################################################
@@ -372,7 +405,13 @@ class LoRaHAMInterface(Interface):
         self.spreading_factor = int(configuration.get("spreading_factor", 7))
         self.coding_rate      = int(configuration.get("coding_rate",      5))
         self.tx_power         = int(configuration.get("tx_power",         17))
-        self.sync_word        = int(configuration.get("sync_word",        "0x12"), 16)
+        
+        raw_sw = configuration.get("sync_word", "0x12")
+        if isinstance(raw_sw, str):
+            self.sync_word = int(raw_sw, 16)
+        else:
+            self.sync_word = int(raw_sw)
+
         self.preamble_length  = int(configuration.get("preamble_length",  8))
         self.implicit_header  = configuration.get("implicit_header", False)
 
@@ -426,11 +465,11 @@ class LoRaHAMInterface(Interface):
             self._radio.set_mode(MODE_SLEEP)
             self._radio.set_mode(MODE_STDBY)
 
+            self._radio.set_freq(self.frequency)
             actual_bw = self._radio.set_bandwidth(self.bandwidth)
             self._radio.set_coding_rate(self.coding_rate)
             self._radio.set_spreading_factor(self.spreading_factor)
             self._radio.set_lna_gain()
-            self._radio.set_freq(self.frequency)
             self._radio.set_tx_power(self.tx_power)
             self._radio.set_sync_word(self.sync_word)
             self._radio.set_preamble_length(self.preamble_length)
@@ -493,23 +532,20 @@ class LoRaHAMInterface(Interface):
                 flags = self._radio.get_irq_flags()
 
                 if flags & IRQ_TX_DONE:
-                    self._radio.clear_irq_flags()
+                    self._radio.clear_irq_flags(IRQ_TX_DONE)
                     self._tx_done_event.set()
-                    self._radio.start_rx()
+                    self._radio.start_rx(clear_irqs=False)
 
-                elif flags & IRQ_RX_DONE:
+                if flags & IRQ_RX_DONE:
                     if flags & IRQ_PAYLOAD_CRC_ERR:
                         RNS.log(f'[{self}] CRC error – packet discarded', RNS.LOG_DEBUG)
-                        self._radio.clear_irq_flags()
-                        self._radio.start_rx()
+                        self._radio.clear_irq_flags(IRQ_RX_DONE | IRQ_PAYLOAD_CRC_ERR)
+                        self._radio.start_rx(clear_irqs=False)
                     else:
                         raw = self._radio.read_packet()
-                        self._radio.start_rx()
-                        threading.Thread(
-                            target=self._receive_raw,
-                            args=(raw,),
-                            daemon=True,
-                        ).start()
+                        self._radio.start_rx(clear_irqs=False)
+                        # Process received packet (fragment reassembly is handled here)
+                        self._receive_raw(raw)
 
             except Exception:
                 if not self._poll_stop.is_set():
@@ -647,7 +683,7 @@ class LoRaHAMInterface(Interface):
     def _calc_bitrate(self, bw_hz: int) -> int:
         sf = self.spreading_factor
         cr = self.coding_rate
-        return max(1, int(sf * (4.0 / (4.0 + cr)) * bw_hz / (2 ** sf)))
+        return max(1, int(sf * (4.0 / cr) * bw_hz / (2 ** sf)))
 
     def process_incoming(self, data: bytes):
         self.rxb += len(data)
