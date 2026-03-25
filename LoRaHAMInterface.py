@@ -429,8 +429,8 @@ class LoRaHAMInterface(Interface):
         self.implicit_header  = configuration.get("implicit_header", False)
 
         # Hardware pin/bus config
-        self.pin_dio0         = int(configuration.get("pin_dio0", 4))
-        self.pin_reset        = int(configuration.get("pin_reset", 17))
+        self.pin_dio0         = int(configuration.get("pin_dio0", 25))
+        self.pin_reset        = int(configuration.get("pin_reset", 5))
         self.spi_bus          = int(configuration.get("spi_bus", 0))
         self.spi_cs           = int(configuration.get("spi_cs", 0))
 
