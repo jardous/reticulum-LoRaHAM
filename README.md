@@ -120,26 +120,25 @@ Each interface must have a unique `[[Interface Name]]` and specify its own hardw
   coding_rate       = 5
   tx_power          = 17
   
-  # Hardware pins for HAT 1
+  # Hardware pins for Module 1
   pin_dio0          = 4
   pin_reset         = 17
   spi_bus           = 0
   spi_cs            = 0
 
-# --- Interface 2: 868 MHz (Example secondary module) ---
+# --- Interface 2: 868 MHz (Secondary LoRaHAM Pi module) ---
 [[LoRaHAM 868]]
   type              = LoRaHAMInterface
   interface_enabled = yes
   frequency         = 868125000
-  bandwidth         = 250000
+  bandwidth         = 125000
   spreading_factor  = 7
   coding_rate       = 5
   tx_power          = 14
   
-  # Hardware pins for HAT 2 / External module
-  # (Example pins – adjust to your actual wiring)
-  pin_dio0          = 22
-  pin_reset         = 23
+  # Hardware pins for Module 2 (LoRaHAM Pi Board defaults)
+  pin_dio0          = 16
+  pin_reset         = 6
   spi_bus           = 0
   spi_cs            = 1
 ```
