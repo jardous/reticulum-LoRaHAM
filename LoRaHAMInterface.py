@@ -157,20 +157,15 @@ class _SX127x:
         self.pin_reset = pin_reset
         self._lock = threading.RLock()
 
-        print(f"[LoRaHAM] GPIO.setmode(BCM)", flush=True)
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
-        print(f"[LoRaHAM] GPIO.setup RESET pin {pin_reset}", flush=True)
         GPIO.setup(self.pin_reset, GPIO.OUT,  initial=GPIO.HIGH)
-        print(f"[LoRaHAM] GPIO.setup DIO0 pin {pin_dio0}", flush=True)
         GPIO.setup(self.pin_dio0,  GPIO.IN,  pull_up_down=GPIO.PUD_DOWN)
 
-        print(f"[LoRaHAM] spidev open bus={spi_bus} cs={spi_cs}", flush=True)
         self._spi = spidev.SpiDev()
         self._spi.open(spi_bus, spi_cs)
         self._spi.max_speed_hz = spi_speed
         self._spi.mode = 0b00
-        print(f"[LoRaHAM] SPI open OK", flush=True)
         self._implicit_header = False
         self._mode_base = MODE_LONG_RANGE
 
@@ -460,31 +455,25 @@ class LoRaHAMInterface(Interface):
 
     def _start(self):
         try:
-            print(f"[LoRaHAM] _start: creating _SX127x dio0={self.pin_dio0} reset={self.pin_reset} spi={self.spi_bus}:{self.spi_cs}", flush=True)
             self._radio = _SX127x(
                 pin_dio0=self.pin_dio0,
                 pin_reset=self.pin_reset,
                 spi_bus=self.spi_bus,
                 spi_cs=self.spi_cs,
             )
-            print(f"[LoRaHAM] _start: reset", flush=True)
             self._radio.reset()
 
-            print(f"[LoRaHAM] _start: reading version", flush=True)
             ver = self._radio.version()
-            print(f"[LoRaHAM] _start: version=0x{ver:02X}", flush=True)
             if ver not in (0x11, 0x12):
                 raise RuntimeError(
                     f"Unexpected SX127x version byte 0x{ver:02X} – "
                     "check SPI wiring and that the LoRaHAM Pi HAT is seated correctly."
                 )
 
-            print(f"[LoRaHAM] _start: set SLEEP", flush=True)
+            # Must be in SLEEP to switch to LoRa mode
             self._radio.set_mode(MODE_SLEEP)
-            print(f"[LoRaHAM] _start: set STDBY", flush=True)
             self._radio.set_mode(MODE_STDBY)
 
-            print(f"[LoRaHAM] _start: configuring modem", flush=True)
             self._radio.set_freq(self.frequency)
             actual_bw = self._radio.set_bandwidth(self.bandwidth)
             self._radio.set_coding_rate(self.coding_rate)
@@ -499,15 +488,15 @@ class LoRaHAMInterface(Interface):
             self.bitrate = self._calc_bitrate(actual_bw)
             self.HW_MTU  = RNS_MTU   # we handle fragmentation internally
 
-            print(f"[LoRaHAM] _start: starting poll thread", flush=True)
+            # Start the IRQ polling thread.
+            # We poll REG_IRQ_FLAGS over SPI rather than relying on GPIO
+            # edge detection, which can fail on some kernels/HATs.
             self._poll_stop = threading.Event()
             self._poll_thread = threading.Thread(
                 target=self._irq_poll_loop, daemon=True)
             self._poll_thread.start()
 
-            print(f"[LoRaHAM] _start: start_rx", flush=True)
             self._radio.start_rx()
-            print(f"[LoRaHAM] _start: online", flush=True)
             self.online = True
 
             if _RNS_AVAILABLE:
