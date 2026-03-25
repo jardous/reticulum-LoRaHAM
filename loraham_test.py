@@ -353,12 +353,14 @@ def test_dio0_pin_diagnostic(radio):
     the correct pin will pulse HIGH briefly after a TX or when a packet arrives.
     """
     section("11b. DIO0 pin diagnostic (check if configured pin is correct)")
-    import os
 
-    # Read current level of the configured pin and a few neighbours
-    pin_dio0 = radio.pin_dio0
-    candidates = sorted(set([pin_dio0, 5, 6, 16, 25, 24, 23, 22]))
-    print(f"  [{INFO}] Sampling BCM pins: {candidates}")
+    pin_dio0  = radio.pin_dio0
+    pin_reset = radio.pin_reset
+
+    # Sample candidate pins as inputs — but never touch the RESET pin,
+    # as pulling it LOW would reset the chip mid-test.
+    candidates = sorted(set([pin_dio0, 5, 6, 16, 25, 24, 23, 22]) - {pin_reset})
+    print(f"  [{INFO}] Sampling BCM pins: {candidates}  (RESET BCM {pin_reset} excluded)")
     print(f"  [{INFO}] Configured PIN_DIO0 = BCM {pin_dio0}")
 
     levels = {}
@@ -371,14 +373,17 @@ def test_dio0_pin_diagnostic(radio):
 
     print(f"  [{INFO}] Pin levels (before TX): { {p: v for p, v in levels.items()} }")
 
-    # Fire a quick TX and re-sample to see which pin goes high
+    # Only watch pins that are LOW before TX — a pin already HIGH is not DIO0.
+    watch_candidates = [p for p in candidates if levels.get(p) == 0]
+
+    # Fire a quick TX and detect LOW->HIGH transitions.
     import threading
     fired_pins = []
     stop = threading.Event()
 
     def watch_pins():
         while not stop.is_set():
-            for pin in candidates:
+            for pin in watch_candidates:
                 try:
                     if GPIO.input(pin) == GPIO.HIGH:
                         if pin not in fired_pins:
