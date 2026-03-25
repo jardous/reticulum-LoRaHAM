@@ -38,8 +38,8 @@ No other LoRa library is needed.
 | MOSI | SPI0 MOSI | 10 |
 | MISO | SPI0 MISO | 9 |
 | SCK | SPI0 SCLK | 11 |
-| DIO0 | GPIO | **4** |
-| RESET | GPIO | **17** |
+| DIO0 | GPIO | **25** |
+| RESET | GPIO | **5** |
 
 If your HAT uses different pins for DIO0 or RESET, you can specify them
 in your Reticulum `config` file:
@@ -47,8 +47,8 @@ in your Reticulum `config` file:
 ```ini
 [[LoRaHAM 433]]
   # ... other options
-  pin_dio0  = 4
-  pin_reset = 17
+  pin_dio0  = 25
+  pin_reset = 5
 ```
 
 Make sure SPI is enabled on the Pi: `sudo raspi-config` → Interfaces → SPI → Enable.
@@ -120,9 +120,9 @@ Each interface must have a unique `[[Interface Name]]` and specify its own hardw
   coding_rate       = 5
   tx_power          = 17
   
-  # Hardware pins for Module 1
-  pin_dio0          = 4
-  pin_reset         = 17
+  # Hardware pins for Module 1 (LoRaHAM Pi Board defaults)
+  pin_dio0          = 25
+  pin_reset         = 5
   spi_bus           = 0
   spi_cs            = 0
 
