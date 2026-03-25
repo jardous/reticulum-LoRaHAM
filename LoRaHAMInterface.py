@@ -549,12 +549,12 @@ class LoRaHAMInterface(Interface):
 
                 if flags & IRQ_RX_DONE:
                     if flags & IRQ_PAYLOAD_CRC_ERR:
-                        if _RNS_AVAILABLE:
-                            RNS.log(f'[{self}] CRC error – packet discarded', RNS.LOG_DEBUG)
+                        RNS.log(f'[{self}] RX CRC error (IRQ=0x{flags:02X})', RNS.LOG_WARNING)
                         self._radio.clear_irq_flags(IRQ_RX_DONE | IRQ_PAYLOAD_CRC_ERR)
                         self._radio.start_rx(clear_irqs=False)
                     else:
                         raw = self._radio.read_packet()
+                        RNS.log(f'[{self}] RX {len(raw)} B  flag=0x{raw[0]:02X}  IRQ=0x{flags:02X}', RNS.LOG_DEBUG)
                         self._radio.start_rx(clear_irqs=False)
                         # Process received packet (fragment reassembly is handled here)
                         self._receive_raw(raw)
