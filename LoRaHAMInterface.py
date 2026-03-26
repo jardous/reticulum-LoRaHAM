@@ -568,6 +568,9 @@ class LoRaHAMInterface(Interface):
                     self._tx_done_event.set()
                     self._radio.start_rx(clear_irqs=False)
 
+                if flags & IRQ_VALID_HEADER and not (flags & IRQ_RX_DONE):
+                    RNS.log(f'[{self}] ValidHeader detected (IRQ=0x{flags:02X})', RNS.LOG_DEBUG)
+
                 if flags & IRQ_RX_DONE:
                     if flags & IRQ_PAYLOAD_CRC_ERR:
                         RNS.log(f'[{self}] RX CRC error (IRQ=0x{flags:02X})', RNS.LOG_WARNING)
@@ -575,9 +578,8 @@ class LoRaHAMInterface(Interface):
                         self._radio.start_rx(clear_irqs=False)
                     else:
                         raw = self._radio.read_packet()
-                        RNS.log(f'[{self}] RX {len(raw)} B  flag=0x{raw[0]:02X}  IRQ=0x{flags:02X}', RNS.LOG_DEBUG)
+                        RNS.log(f'[{self}] RX {len(raw)} B  IRQ=0x{flags:02X}  hex={raw.hex()}', RNS.LOG_DEBUG)
                         self._radio.start_rx(clear_irqs=False)
-                        # Process received packet (fragment reassembly is handled here)
                         self._receive_raw(raw)
 
             except Exception:
