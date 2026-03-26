@@ -37,7 +37,9 @@ REG_RSSI_WIDEBAND    = 0x2C
 REG_MODEM_CONFIG1    = 0x1D
 REG_MODEM_CONFIG2    = 0x1E
 REG_MODEM_CONFIG3    = 0x26
-REG_SYNC_WORD        = 0x39
+REG_SYNC_WORD           = 0x39
+REG_DETECTION_OPTIMIZE  = 0x31
+REG_DETECTION_THRESHOLD = 0x37
 REG_VERSION          = 0x42
 REG_FIFO             = 0x00
 
@@ -110,6 +112,14 @@ def setup(spi, freq, sf, bw_hz, sync_word):
 
     # SF + CRC
     spi_write(spi, REG_MODEM_CONFIG2, (sf << 4) | 0x04)  # CRC on
+
+    # Detection optimisation (required for SF>6)
+    if sf == 6:
+        spi_write(spi, REG_DETECTION_OPTIMIZE,  0xC5)
+        spi_write(spi, REG_DETECTION_THRESHOLD, 0x0C)
+    else:
+        spi_write(spi, REG_DETECTION_OPTIMIZE,  0xC3)
+        spi_write(spi, REG_DETECTION_THRESHOLD, 0x0A)
 
     # AGC on
     mc3 = spi_read(spi, REG_MODEM_CONFIG3)
