@@ -1,3 +1,17 @@
+> [!WARNING]
+> **Superseded — use [jardous/loraham-reticulum](https://github.com/jardous/loraham-reticulum).**
+>
+> This repository is retained as an earlier experimental implementation. For the
+> tested LoRaHAM Pi **868 MHz** interface, installation instructions, dependencies
+> and automated tests, use the replacement repository. It has passed bidirectional
+> raw LoRa packet tests and authenticated Reticulum `rnx` execution.
+>
+> The legacy implementation below does not implement normal RNode on-air framing;
+> its RNode interoperability claim is incorrect. Its GPIO/chip-select assumptions
+> also differ from the tested board mapping. Do not copy this legacy
+> `LoRaHAMInterface.py` over the working replacement. The replacement currently
+> supports the 868 MHz module only; it is not a validated 433 MHz replacement.
+
 # LoRaHAMInterface – Reticulum Interface for the LoRaHAM Pi
 
 A fully self-contained Reticulum custom-interface module for the
